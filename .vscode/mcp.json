@@ -1,0 +1,9 @@
+{
+  "servers": {
+    "webmcp-demo": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["webmcp-demo/mcp-server/index.js"]
+    }
+  }
+}
