@@ -2,56 +2,282 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>WebMCP Task Demo</title>
+  <title>WebMCP Task Dashboard</title>
   <style>
-    body { font-family: sans-serif; max-width: 600px; margin: 2rem auto; }
+    body { font-family: sans-serif; max-width: 640px; margin: 2rem auto; }
+    h1 { margin-bottom: 0.25rem; }
+    .subtitle { color: #666; margin-top: 0; }
+    section { margin: 1.5rem 0; padding: 1rem; border: 1px solid #ddd; border-radius: 6px; }
+    section h2 { margin-top: 0; }
+    #filters label { margin-right: 1rem; }
+    li { padding: 0.25rem 0.5rem; cursor: pointer; border-radius: 4px; }
     li.done { text-decoration: line-through; color: #888; }
+    li.selected { background: #d6ebff; outline: 2px solid #4b9fff; }
+    li[hidden] { display: none; }
+    .step { display: none; }
+    .step.active { display: block; }
+    .step-indicator { font-weight: bold; color: #4b9fff; }
+    button { margin-right: 0.5rem; }
   </style>
 </head>
 <body>
-  <h1>Task list</h1>
-  <ul id="list"></ul>
+  <h1>Task Dashboard</h1>
+  <p class="subtitle">
+    A demo of how WebMCP tools can manipulate live client-side state
+    (filters, selection, a multi-step wizard) that never touches the server &mdash;
+    in addition to tools that call the REST API.
+  </p>
+
+  <section id="filters-section">
+    <h2>Filter (client-side only, never sent to the server)</h2>
+    <label>Search: <input id="search" type="text" placeholder="Search tasks..." /></label>
+    <label>Status:
+      <select id="status-filter">
+        <option value="all">All</option>
+        <option value="active">Active</option>
+        <option value="done">Done</option>
+      </select>
+    </label>
+  </section>
+
+  <section id="list-section">
+    <h2>Tasks (click a row to select it)</h2>
+    <ul id="list"></ul>
+  </section>
+
+  <section id="wizard-section">
+    <h2>New Task Wizard</h2>
+    <p class="step-indicator">Step <span id="wizard-step-number">1</span> of 3</p>
+
+    <div class="step active" id="wizard-step-1">
+      <label>Task text: <input id="wizard-text" type="text" /></label>
+    </div>
+
+    <div class="step" id="wizard-step-2">
+      <label>Priority:
+        <select id="wizard-priority">
+          <option value="low">Low</option>
+          <option value="medium" selected>Medium</option>
+          <option value="high">High</option>
+        </select>
+      </label>
+    </div>
+
+    <div class="step" id="wizard-step-3">
+      <p>Review: <strong id="wizard-review"></strong></p>
+    </div>
+
+    <button id="wizard-back">Back</button>
+    <button id="wizard-next">Next</button>
+    <button id="wizard-submit" style="display: none;">Submit</button>
+  </section>
 
   <script>
     const API = "http://localhost:3000/api/tasks";
     const list = document.getElementById("list");
+    const searchInput = document.getElementById("search");
+    const statusFilter = document.getElementById("status-filter");
 
-    async function fetchAndRender() {
-      const tasks = await fetch(API).then(r => r.json());
+    let allTasks = [];
+    let selectedTaskId = null;
+
+    // ------------------------------------------------------------------
+    // dashboard: client-side filtering and selection.
+    //
+    // None of this state is persisted to the server. "Visible tasks" and
+    // "selected task" only exist in this page's JavaScript runtime and the
+    // DOM it has rendered. A backend MCP server has no way to read or
+    // change either of these.
+    // ------------------------------------------------------------------
+    const dashboard = {
+      filter: { status: "all", search: "" },
+
+      setStatusFilter(status) {
+        this.filter.status = status;
+        statusFilter.value = status;
+        render();
+        return this.getVisibleTasks();
+      },
+
+      setSearchFilter(query) {
+        this.filter.search = query;
+        searchInput.value = query;
+        render();
+        return this.getVisibleTasks();
+      },
+
+      getVisibleTasks() {
+        return allTasks.filter(t => this.matches(t));
+      },
+
+      matches(t) {
+        const statusOk =
+          this.filter.status === "all" ||
+          (this.filter.status === "done") === t.done;
+        const searchOk = t.text.toLowerCase().includes(this.filter.search.toLowerCase());
+        return statusOk && searchOk;
+      },
+
+      selectTask(id) {
+        selectedTaskId = id;
+        render();
+        return this.getSelectedTask();
+      },
+
+      getSelectedTask() {
+        return allTasks.find(t => t.id === selectedTaskId) ?? null;
+      }
+    };
+
+    // ------------------------------------------------------------------
+    // wizard: a multi-step form whose step, validation and field
+    // visibility are pure client-side state. There is no API endpoint
+    // for "go to step 2" or "is the priority field visible" -- a backend
+    // MCP server simply has no equivalent to call.
+    // ------------------------------------------------------------------
+    const wizard = {
+      state: { step: 1, data: { text: "", priority: "medium" } },
+
+      isFieldVisible(field) {
+        if (field === "text") return this.state.step === 1;
+        if (field === "priority") return this.state.step === 2;
+        return false;
+      },
+
+      canAdvance() {
+        if (this.state.step === 1) return this.state.data.text.trim().length > 0;
+        return true;
+      },
+
+      goToStep(step) {
+        if (step < 1 || step > 3) {
+          throw new Error(`Invalid step ${step}. Must be between 1 and 3.`);
+        }
+        if (step > this.state.step && !this.canAdvance()) {
+          throw new Error("Cannot advance: the task text is required before leaving step 1.");
+        }
+        this.state.step = step;
+        renderWizard();
+        return this.getState();
+      },
+
+      setField(field, value) {
+        if (!(field in this.state.data)) {
+          throw new Error(`Unknown wizard field "${field}".`);
+        }
+        this.state.data[field] = value;
+        renderWizard();
+        return this.getState();
+      },
+
+      getState() {
+        return {
+          step: this.state.step,
+          data: { ...this.state.data },
+          visibleFields: Object.keys(this.state.data).filter(f => this.isFieldVisible(f)),
+          canAdvance: this.canAdvance()
+        };
+      },
+
+      async submit() {
+        const { text, priority } = this.state.data;
+        const task = await fetch(API, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: `[${priority}] ${text}` })
+        }).then(r => r.json());
+
+        this.state = { step: 1, data: { text: "", priority: "medium" } };
+        renderWizard();
+        await fetchAndRender();
+        return task;
+      }
+    };
+
+    // ------------------------------------------------------------------
+    // Rendering
+    // ------------------------------------------------------------------
+    function render() {
       list.innerHTML = "";
-      tasks.forEach(t => {
+      allTasks.forEach(t => {
         const li = document.createElement("li");
         li.textContent = `[${t.id}] ${t.text}`;
+        li.dataset.id = t.id;
         if (t.done) li.classList.add("done");
+        if (t.id === selectedTaskId) li.classList.add("selected");
+        if (!dashboard.matches(t)) li.hidden = true;
+        li.addEventListener("click", () => dashboard.selectTask(t.id));
         list.appendChild(li);
       });
-      return tasks;
     }
 
-    fetchAndRender();
+    function renderWizard() {
+      document.querySelectorAll("#wizard-section .step").forEach((el, i) => {
+        el.classList.toggle("active", i + 1 === wizard.state.step);
+      });
+      document.getElementById("wizard-step-number").textContent = wizard.state.step;
+      document.getElementById("wizard-text").value = wizard.state.data.text;
+      document.getElementById("wizard-priority").value = wizard.state.data.priority;
+      document.getElementById("wizard-review").textContent =
+        `"${wizard.state.data.text}" (priority: ${wizard.state.data.priority})`;
 
-    // ----------------------------------------------------------------
+      document.getElementById("wizard-back").disabled = wizard.state.step === 1;
+      document.getElementById("wizard-next").style.display = wizard.state.step < 3 ? "" : "none";
+      document.getElementById("wizard-submit").style.display = wizard.state.step === 3 ? "" : "none";
+    }
+
+    async function fetchAndRender() {
+      allTasks = await fetch(API).then(r => r.json());
+      render();
+      return allTasks;
+    }
+
+    // Wire up the page's own UI controls to the same shared objects that
+    // the WebMCP tools below call into.
+    searchInput.addEventListener("input", e => dashboard.setSearchFilter(e.target.value));
+    statusFilter.addEventListener("change", e => dashboard.setStatusFilter(e.target.value));
+    document.getElementById("wizard-text").addEventListener("input", e => wizard.setField("text", e.target.value));
+    document.getElementById("wizard-priority").addEventListener("change", e => wizard.setField("priority", e.target.value));
+    document.getElementById("wizard-back").addEventListener("click", () => wizard.goToStep(wizard.state.step - 1));
+    document.getElementById("wizard-next").addEventListener("click", () => wizard.goToStep(wizard.state.step + 1));
+    document.getElementById("wizard-submit").addEventListener("click", () => wizard.submit());
+
+    fetchAndRender();
+    renderWizard();
+
+    // ------------------------------------------------------------------
     // WebMCP tool registration
+    //
     // Tools are exposed to a browser-embedded AI agent via the
-    // document.modelContext API (W3C WebMCP proposal).
-    // ----------------------------------------------------------------
+    // document.modelContext API (W3C WebMCP proposal). Each tool's
+    // execute() callback runs in this page's own JavaScript runtime, so
+    // it can call straight into `dashboard` and `wizard` above -- the
+    // same objects the on-page UI controls use.
+    //
+    // Three of these tools (list-tasks, add-task, complete-task) have a
+    // direct REST equivalent and are mirrored by the backend MCP server
+    // in mcp-server/index.js. The rest -- filtering, selection, and the
+    // wizard -- operate on transient, in-memory page state that has no
+    // server-side representation, and therefore have NO equivalent in
+    // the backend MCP server.
+    // ------------------------------------------------------------------
     if ("modelContext" in document) {
+
+      // --- Tools with a backend MCP equivalent -----------------------
 
       document.modelContext.registerTool({
         name: "list-tasks",
-        description: "Returns all tasks in the task list.",
+        description: "Returns all tasks from the server, regardless of the current filter.",
         inputSchema: { type: "object", properties: {} },
         async execute() {
           const tasks = await fetchAndRender();
-          return {
-            content: [{ type: "text", text: JSON.stringify(tasks, null, 2) }]
-          };
+          return { content: [{ type: "text", text: JSON.stringify(tasks, null, 2) }] };
         }
       });
 
       document.modelContext.registerTool({
         name: "add-task",
-        description: "Adds a new task to the task list.",
+        description: "Adds a new task directly via the API, bypassing the wizard.",
         inputSchema: {
           type: "object",
           properties: {
@@ -66,9 +292,7 @@
             body: JSON.stringify({ text })
           });
           const tasks = await fetchAndRender();
-          return {
-            content: [{ type: "text", text: `Task added. Current tasks: ${JSON.stringify(tasks)}` }]
-          };
+          return { content: [{ type: "text", text: `Task added. Current tasks: ${JSON.stringify(tasks)}` }] };
         }
       });
 
@@ -85,13 +309,141 @@
         async execute({ id }) {
           await fetch(`${API}/${id}/done`, { method: "PATCH" });
           const tasks = await fetchAndRender();
-          return {
-            content: [{ type: "text", text: `Task ${id} marked done. Tasks: ${JSON.stringify(tasks)}` }]
-          };
+          return { content: [{ type: "text", text: `Task ${id} marked done. Tasks: ${JSON.stringify(tasks)}` }] };
         }
       });
 
-      console.log("WebMCP tools registered:", ["list-tasks", "add-task", "complete-task"]);
+      // --- Tools with NO backend MCP equivalent: live client state ---
+
+      document.modelContext.registerTool({
+        name: "set-status-filter",
+        description: "Filters the on-screen task list by status (all/active/done). Client-side only; does not change the server's data.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            status: { type: "string", enum: ["all", "active", "done"] }
+          },
+          required: ["status"]
+        },
+        async execute({ status }) {
+          const visible = dashboard.setStatusFilter(status);
+          return { content: [{ type: "text", text: `Filter set to "${status}". Visible tasks: ${JSON.stringify(visible)}` }] };
+        }
+      });
+
+      document.modelContext.registerTool({
+        name: "set-search-filter",
+        description: "Filters the on-screen task list to tasks whose text contains the given query. Client-side only.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            query: { type: "string", description: "Substring to search for, case-insensitive." }
+          },
+          required: ["query"]
+        },
+        async execute({ query }) {
+          const visible = dashboard.setSearchFilter(query);
+          return { content: [{ type: "text", text: `Search set to "${query}". Visible tasks: ${JSON.stringify(visible)}` }] };
+        }
+      });
+
+      document.modelContext.registerTool({
+        name: "get-visible-tasks",
+        description: "Returns only the tasks currently visible under the active search/status filters -- i.e. what the user actually sees on screen right now.",
+        inputSchema: { type: "object", properties: {} },
+        async execute() {
+          return { content: [{ type: "text", text: JSON.stringify(dashboard.getVisibleTasks(), null, 2) }] };
+        }
+      });
+
+      document.modelContext.registerTool({
+        name: "select-task",
+        description: "Highlights a task row in the page by its numeric ID, as if the user clicked it.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            id: { type: "number", description: "The numeric ID of the task to select." }
+          },
+          required: ["id"]
+        },
+        async execute({ id }) {
+          const selected = dashboard.selectTask(id);
+          if (!selected) {
+            return { content: [{ type: "text", text: `No task with id ${id} exists.` }], isError: true };
+          }
+          return { content: [{ type: "text", text: `Selected task: ${JSON.stringify(selected)}` }] };
+        }
+      });
+
+      document.modelContext.registerTool({
+        name: "get-selected-task",
+        description: "Returns whichever task is currently highlighted/selected on screen, or null if none is selected.",
+        inputSchema: { type: "object", properties: {} },
+        async execute() {
+          return { content: [{ type: "text", text: JSON.stringify(dashboard.getSelectedTask(), null, 2) }] };
+        }
+      });
+
+      document.modelContext.registerTool({
+        name: "wizard-go-to-step",
+        description: "Navigates the on-page 'New Task' wizard to the given step (1-3). Step 2 advances only if step 1's text field is filled in, enforcing the same validation as clicking the on-page 'Next' button.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            step: { type: "number", enum: [1, 2, 3] }
+          },
+          required: ["step"]
+        },
+        async execute({ step }) {
+          try {
+            const state = wizard.goToStep(step);
+            return { content: [{ type: "text", text: JSON.stringify(state, null, 2) }] };
+          } catch (err) {
+            return { content: [{ type: "text", text: err.message }], isError: true };
+          }
+        }
+      });
+
+      document.modelContext.registerTool({
+        name: "wizard-set-field",
+        description: "Sets a field in the on-page 'New Task' wizard (text or priority). Only affects the wizard's in-memory draft until 'wizard-submit' is called.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            field: { type: "string", enum: ["text", "priority"] },
+            value: { type: "string" }
+          },
+          required: ["field", "value"]
+        },
+        async execute({ field, value }) {
+          try {
+            const state = wizard.setField(field, value);
+            return { content: [{ type: "text", text: JSON.stringify(state, null, 2) }] };
+          } catch (err) {
+            return { content: [{ type: "text", text: err.message }], isError: true };
+          }
+        }
+      });
+
+      document.modelContext.registerTool({
+        name: "wizard-submit",
+        description: "Submits the on-page 'New Task' wizard, creating the task via the API and resetting the wizard to step 1.",
+        inputSchema: { type: "object", properties: {} },
+        async execute() {
+          if (!wizard.canAdvance()) {
+            return { content: [{ type: "text", text: "Cannot submit: the task text is empty." }], isError: true };
+          }
+          const task = await wizard.submit();
+          return { content: [{ type: "text", text: `Task created: ${JSON.stringify(task)}` }] };
+        }
+      });
+
+      console.log("WebMCP tools registered:", [
+        "list-tasks", "add-task", "complete-task",
+        "set-status-filter", "set-search-filter", "get-visible-tasks",
+        "select-task", "get-selected-task",
+        "wizard-go-to-step", "wizard-set-field", "wizard-submit"
+      ]);
     } else {
       console.warn("document.modelContext is not available in this browser. WebMCP tools not registered.");
     }

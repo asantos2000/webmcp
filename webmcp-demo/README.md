@@ -1,43 +1,105 @@
-# WebMCP Demo: Shared Task List for Browser Agents and VS Code Copilot
+# WebMCP Demo: Task Dashboard with Live Page State vs. Backend MCP
 
-This project demonstrates how the same application logic can be exposed to two
-different kinds of AI agents:
+This project demonstrates the core distinction between **WebMCP**
+(`document.modelContext`) and a conventional **backend MCP server** consumed
+by tools like GitHub Copilot in VS Code.
 
-- A **browser-embedded agent**, via the WebMCP proposal (`document.modelContext`).
-- **GitHub Copilot in VS Code**, via a standard stdio MCP server.
+The example app is a task dashboard with:
 
-The example app is a simple task list. Both integration layers read and write
-the same shared state through a small Express REST API, so a task added by
-Copilot is immediately visible in the browser (after a refresh), and vice versa.
+- A persisted task list, backed by a small Express REST API.
+- A **client-side search/status filter** that is never sent to the server.
+- A **selected task** (highlighted by clicking a row) that exists only in
+  the page's in-memory state.
+- A **multi-step "New Task" wizard** whose step, validation and field
+  visibility are pure client-side logic.
+
+WebMCP tools registered on the page (`public/index.html`) can operate on
+*all* of this: the persisted tasks, the live filter, the current selection,
+and the wizard's in-progress draft. The backend MCP server
+(`mcp-server/index.js`), consumed by Copilot, can only ever see and change
+what's exposed by `/api/tasks` — the persisted task list.
 
 ## What is WebMCP?
 
 WebMCP is a [W3C Web Machine Learning Community Group proposal](https://github.com/webmachinelearning/webmcp)
-that defines a `document.modelContext` API. A web page can use this API to
-register **tools** — named, schema-described actions (e.g. "add a task",
-"list tasks") — directly on the live page. A browser-embedded AI agent can
-then discover and call these tools to interact with the page, without
-scraping the DOM or relying on a separate backend integration.
+that defines a `document.modelContext` API. A web page uses this API to
+register **tools** — named, schema-described actions — directly on the live
+page. A browser-embedded AI agent can discover and call these tools.
 
-This is architecturally different from the **Model Context Protocol (MCP)**
-used by tools like GitHub Copilot, VS Code, and Claude:
+**WebMCP is not "an API caller that happens to run in the browser."** A
+tool's `execute` callback can contain any JavaScript the page could otherwise
+run: manipulate the DOM, call internal application functions, read
+`localStorage`, or call a REST API. The defining characteristic of WebMCP is
+not *what* a tool does internally, but *where it runs and what it has access
+to*.
 
-| | WebMCP (`document.modelContext`) | MCP (stdio/HTTP servers) |
-|---|---|---|
-| Where it runs | Inside a web page, in the browser | As a separate server process |
-| Who calls it | A browser-embedded agent | An MCP client (e.g. VS Code Copilot) |
-| Status | Proposal, not yet shipped in any stable browser | Widely supported standard |
+### The actual distinction: shared runtime context
 
-Because these two systems operate at different layers, they can't be wired
-together directly. The practical bridge is to expose the **same domain
-logic** as both: a WebMCP page for the browser agent, and a backend MCP
-server for Copilot. That's what this project does — `public/index.html`
-registers WebMCP tools, and `mcp-server/index.js` mirrors the same tools as
-an MCP server, both calling the same REST API in `server/index.js`.
+A WebMCP tool executes inside the same JavaScript runtime as the page. That
+grants access to three things a backend MCP server categorically cannot have:
 
-The `document.modelContext` API is guarded with `if ("modelContext" in
-document)`, so the page works as a normal web app in current browsers while
-being forward-compatible with browsers that implement WebMCP.
+1. **The live DOM.** A WebMCP tool can read what's currently rendered, click
+   things, or update visual elements without scraping HTML. In this demo,
+   `select-task` highlights a row in the actual page, and `get-visible-tasks`
+   returns exactly the rows the user currently sees under the active filter.
+
+2. **The authenticated session.** A WebMCP tool runs as if it were the user,
+   inheriting cookies, in-memory tokens, and session storage transparently. A
+   backend server must authenticate independently, which may be impossible
+   for short-lived or browser-only tokens. (Not shown directly in this demo,
+   since it has no auth, but it's the same mechanism as #3 below.)
+
+3. **Live application state.** A WebMCP tool can read or mutate state held
+   in memory — component state, in-progress form data, UI mode — that has
+   never been (and may never be) persisted to a server. In this demo, the
+   `dashboard` filter/selection state and the `wizard` step/draft state are
+   exactly this: they live only in `public/index.html`'s JavaScript and are
+   never sent to `server/index.js`.
+
+### What makes it different from a backend MCP calling APIs
+
+A backend MCP server operates on the application's *data model*: it can
+create, read, or update records through whatever the API exposes. WebMCP
+operates on the *running application itself*. If a page has a multi-step
+wizard with client-side validation that's never serialized to a server, a
+backend MCP server has no "advance to step 2" endpoint to call — there is
+nothing for it to call. A WebMCP tool can call `wizard.goToStep(2)` directly,
+because it shares the page's scope.
+
+### A clarifying analogy
+
+A backend MCP server is like a warehouse worker who interacts with a store
+only through the loading dock — a formal, documented interface for receiving
+and dispatching goods. A WebMCP tool is like a colleague working inside the
+store: they can rearrange shelves, talk to customers, read the internal
+inventory display, and use the point-of-sale system, all without going
+through the loading dock.
+
+### When the two approaches overlap
+
+If a page has no meaningful client-side state beyond what's already exposed
+by a REST API, WebMCP and a backend MCP calling that API are functionally
+equivalent — a degenerate case, not the general one. This demo deliberately
+includes both: `list-tasks`, `add-task`, and `complete-task` are the
+degenerate, overlapping case (mirrored in both layers), while the filter,
+selection, and wizard tools are the general case that only WebMCP can do.
+
+## Tool comparison
+
+| Tool | WebMCP (`public/index.html`) | Backend MCP (`mcp-server/index.js`) | Why |
+|---|---|---|---|
+| `list-tasks` | ✅ | ✅ | Backed by `GET /api/tasks` |
+| `add-task` | ✅ | ✅ | Backed by `POST /api/tasks` |
+| `complete-task` | ✅ | ✅ | Backed by `PATCH /api/tasks/:id/done` |
+| `set-status-filter` / `set-search-filter` | ✅ | ❌ | Filter state exists only in page JS, never sent to the server |
+| `get-visible-tasks` | ✅ | ❌ | "What's currently on screen" has no server-side representation |
+| `select-task` / `get-selected-task` | ✅ | ❌ | Selection is an in-memory/DOM concept with no API |
+| `wizard-go-to-step` / `wizard-set-field` | ✅ | ❌ | Wizard step and draft fields are transient client-side state |
+| `wizard-submit` | ✅ | ❌* | Calls the API internally, but only reachable through the wizard's client-side validation |
+
+\* `wizard-submit` ultimately calls `POST /api/tasks`, so the *effect* is
+reachable via the backend's `add-task`, but the wizard's step-by-step
+flow and validation themselves are not.
 
 ## Project structure
 
@@ -48,14 +110,14 @@ webmcp-demo/
 ├── mcp-server/
 │   └── index.js          # stdio MCP server consumed by VS Code Copilot
 ├── public/
-│   └── index.html         # WebMCP-instrumented web page
+│   └── index.html         # WebMCP-instrumented task dashboard
 ├── package.json
 └── .vscode/
     └── mcp.json           # Registers the MCP server with Copilot
 ```
 
-The shared state (an in-memory task list) lives in `server/index.js` and is
-accessed via:
+The persisted state (an in-memory task list) lives in `server/index.js` and
+is accessed via:
 
 - `GET /api/tasks` — list all tasks
 - `POST /api/tasks` — add a task (`{ "text": "..." }`)
@@ -75,8 +137,8 @@ npm install
 npm start
 ```
 
-This serves the task list page at http://localhost:3000 and the `/api/tasks`
-REST API used by both integration layers.
+Open http://localhost:3000 to see the task dashboard: the filter controls,
+the task list, and the "New Task" wizard.
 
 ### 3. Register the MCP server with VS Code Copilot
 
@@ -87,8 +149,7 @@ discover its tools.
 
 ### 4. Try it out
 
-Open Copilot Chat, switch to **Agent** mode, and prompt it with natural
-language, for example:
+**Via Copilot (backend MCP — persisted data only):**
 
 ```
 Add a task "Review the WebMCP specification". Then list all tasks.
@@ -97,21 +158,45 @@ Add a task "Review the WebMCP specification". Then list all tasks.
 The tools icon in the chat box shows the registered MCP servers and their
 tools (`list-tasks`, `add-task`, `complete-task`).
 
+**Via a WebMCP-capable browser agent (live page state):**
+
 If a future browser implements WebMCP, opening http://localhost:3000 with a
-WebMCP-capable browser agent would expose the same three tools directly on
-the page.
+WebMCP-capable browser agent would expose all eleven tools, including ones
+with no backend equivalent, e.g.:
+
+```
+Filter the task list to show only active tasks containing "spec".
+Then select the first visible task and tell me what's selected.
+```
+
+```
+Start the New Task wizard, set the text to "Write release notes",
+go to step 2, set priority to high, then go to step 3 and submit.
+```
+
+Neither of these can be expressed as calls to `mcp-server/index.js`, because
+the filter, selection, and wizard state they manipulate exist only in the
+browser tab.
 
 ## Architecture summary
 
 ```
-Browser (future WebMCP-capable)          VS Code + GitHub Copilot
-─────────────────────────────────        ──────────────────────────
-  index.html                               .vscode/mcp.json
-    └─ document.modelContext               └─ "webmcp-demo" (stdio)
-         ├─ list-tasks   ──┐                    ├─ list-tasks   ──┐
-         ├─ add-task     ──┼──► HTTP ──► server/index.js (Express / in-memory store)
-         └─ complete-task──┘            ├─ add-task     ──┘
-                                        └─ complete-task
+Browser (future WebMCP-capable)              VS Code + GitHub Copilot
+──────────────────────────────────           ──────────────────────────
+  index.html                                   .vscode/mcp.json
+    └─ document.modelContext                   └─ "webmcp-demo" (stdio)
+         ├─ list-tasks            ──┐               ├─ list-tasks   ──┐
+         ├─ add-task              ──┼─► HTTP ──► server/index.js      │
+         ├─ complete-task         ──┘          (Express / in-memory)  │
+         │                                          ├─ add-task     ──┤
+         ├─ set-status-filter     ─┐                └─ complete-task─┘
+         ├─ set-search-filter      │
+         ├─ get-visible-tasks      ├─► live page state only
+         ├─ select-task            │   (filter, selection, wizard) --
+         ├─ get-selected-task      │   no backend equivalent
+         ├─ wizard-go-to-step      │
+         ├─ wizard-set-field       │
+         └─ wizard-submit         ─┘
 ```
 
 ## References

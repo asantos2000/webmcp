@@ -9,6 +9,15 @@ const server = new McpServer({
   version: "1.0.0"
 });
 
+// This server only mirrors the three WebMCP tools that have a REST
+// equivalent (list-tasks, add-task, complete-task). The page's
+// set-status-filter, set-search-filter, get-visible-tasks, select-task,
+// get-selected-task and wizard-* tools operate on transient, in-memory
+// browser state -- the current filter, the selected row, the wizard's
+// step and draft fields -- none of which is persisted to the server or
+// exposed via /api/tasks. There is nothing for this process to call to
+// reproduce them.
+
 // Mirror of the WebMCP "list-tasks" tool
 server.tool(
   "list-tasks",
