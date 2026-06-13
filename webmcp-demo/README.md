@@ -178,6 +178,183 @@ Neither of these can be expressed as calls to `mcp-server/index.js`, because
 the filter, selection, and wizard state they manipulate exist only in the
 browser tab.
 
+## Tool reference and examples
+
+Each tool below shows the `execute()` input and the kind of result it
+returns. The first three are also available from the backend MCP server; the
+rest are WebMCP-only, operating on live page state.
+
+### `list-tasks`
+
+```json
+// input
+{}
+```
+```
+// result
+[{ "id": 1, "text": "Write release notes", "done": false }]
+```
+Fetches the full task list from the server and re-renders it. Use this to
+get the ground truth, independent of any filter currently applied.
+
+### `add-task`
+
+```json
+// input
+{ "text": "Review the WebMCP specification" }
+```
+```
+// result
+Task added. Current tasks: [{"id":1,"text":"Review the WebMCP specification","done":false}]
+```
+Creates a task directly via `POST /api/tasks`, bypassing the wizard.
+
+### `complete-task`
+
+```json
+// input
+{ "id": 1 }
+```
+```
+// result
+Task 1 marked done. Tasks: [{"id":1,"text":"Review the WebMCP specification","done":true}]
+```
+Marks a task done via `PATCH /api/tasks/1/done`.
+
+---
+
+### `set-status-filter` (WebMCP-only)
+
+```json
+// input
+{ "status": "active" }
+```
+```
+// result
+Filter set to "active". Visible tasks: [{"id":2,"text":"Write release notes","done":false}]
+```
+Updates the on-page status `<select>` and re-renders the list so completed
+tasks are hidden. Nothing is sent to the server.
+
+### `set-search-filter` (WebMCP-only)
+
+```json
+// input
+{ "query": "spec" }
+```
+```
+// result
+Search set to "spec". Visible tasks: [{"id":1,"text":"Review the WebMCP specification","done":false}]
+```
+Filters the on-screen list to tasks whose text contains "spec"
+(case-insensitive). Combine with `set-status-filter` — both filters apply
+together.
+
+### `get-visible-tasks` (WebMCP-only)
+
+```json
+// input
+{}
+```
+```
+// result
+[{ "id": 1, "text": "Review the WebMCP specification", "done": false }]
+```
+Returns exactly the rows currently shown under the active filters — i.e.
+what the user sees, not the full dataset. With no filter active, this
+returns the same set as `list-tasks`.
+
+### `select-task` (WebMCP-only)
+
+```json
+// input
+{ "id": 1 }
+```
+```
+// result
+Selected task: {"id":1,"text":"Review the WebMCP specification","done":false}
+```
+Highlights row `1` in the DOM (adds the `.selected` class), exactly as if
+the user clicked it. Returns an error if no task with that ID exists.
+
+### `get-selected-task` (WebMCP-only)
+
+```json
+// input
+{}
+```
+```
+// result
+{ "id": 1, "text": "Review the WebMCP specification", "done": false }
+```
+Reads back whichever task is currently highlighted, or `null` if none is
+selected. There is no API endpoint that stores this — it only exists as a
+JS variable in the page.
+
+### `wizard-go-to-step` (WebMCP-only)
+
+```json
+// input
+{ "step": 2 }
+```
+```json
+// result
+{
+  "step": 2,
+  "data": { "text": "Write release notes", "priority": "medium" },
+  "visibleFields": ["priority"],
+  "canAdvance": true
+}
+```
+Navigates the on-page wizard to step 2, toggling which `<div class="step">`
+is shown. Calling this with `step: 2` while step 1's `text` field is empty
+returns an error (`isError: true`), matching the validation the on-page
+"Next" button enforces.
+
+### `wizard-set-field` (WebMCP-only)
+
+```json
+// input
+{ "field": "priority", "value": "high" }
+```
+```json
+// result
+{
+  "step": 2,
+  "data": { "text": "Write release notes", "priority": "high" },
+  "visibleFields": ["priority"],
+  "canAdvance": true
+}
+```
+Updates the wizard's in-memory draft and the corresponding `<input>`/`<select>`
+element on the page. Nothing is persisted until `wizard-submit` is called.
+
+### `wizard-submit` (WebMCP-only, calls the API internally)
+
+```json
+// input
+{}
+```
+```
+// result
+Task created: {"id":3,"text":"[high] Write release notes","done":false}
+```
+Posts the wizard's draft to `POST /api/tasks` and resets the wizard back to
+step 1. This is the only WebMCP-only tool that touches the server — but
+reaching this point requires driving the wizard's step/validation state
+first, which `mcp-server/index.js` has no way to do.
+
+### Putting it together: a full wizard walkthrough
+
+```
+wizard-go-to-step { "step": 1 }     -> step 1, text field visible
+wizard-set-field  { "field": "text", "value": "Write release notes" }
+wizard-go-to-step { "step": 2 }     -> succeeds because text is non-empty
+wizard-set-field  { "field": "priority", "value": "high" }
+wizard-go-to-step { "step": 3 }     -> shows the review screen
+wizard-submit     {}                -> creates "[high] Write release notes"
+```
+
 ## Architecture summary
 
 ```
