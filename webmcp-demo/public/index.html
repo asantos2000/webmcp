@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>WebMCP Task Demo</title>
+  <style>
+    body { font-family: sans-serif; max-width: 600px; margin: 2rem auto; }
+    li.done { text-decoration: line-through; color: #888; }
+  </style>
+</head>
+<body>
+  <h1>Task list</h1>
+  <ul id="list"></ul>
+
+  <script>
+    const API = "http://localhost:3000/api/tasks";
+    const list = document.getElementById("list");
+
+    async function fetchAndRender() {
+      const tasks = await fetch(API).then(r => r.json());
+      list.innerHTML = "";
+      tasks.forEach(t => {
+        const li = document.createElement("li");
+        li.textContent = `[${t.id}] ${t.text}`;
+        if (t.done) li.classList.add("done");
+        list.appendChild(li);
+      });
+      return tasks;
+    }
+
+    fetchAndRender();
+
+    // ----------------------------------------------------------------
+    // WebMCP tool registration
+    // Tools are exposed to a browser-embedded AI agent via the
+    // document.modelContext API (W3C WebMCP proposal).
+    // ----------------------------------------------------------------
+    if ("modelContext" in document) {
+
+      document.modelContext.registerTool({
+        name: "list-tasks",
+        description: "Returns all tasks in the task list.",
+        inputSchema: { type: "object", properties: {} },
+        async execute() {
+          const tasks = await fetchAndRender();
+          return {
+            content: [{ type: "text", text: JSON.stringify(tasks, null, 2) }]
+          };
+        }
+      });
+
+      document.modelContext.registerTool({
+        name: "add-task",
+        description: "Adds a new task to the task list.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            text: { type: "string", description: "The text of the task to add." }
+          },
+          required: ["text"]
+        },
+        async execute({ text }) {
+          await fetch(API, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text })
+          });
+          const tasks = await fetchAndRender();
+          return {
+            content: [{ type: "text", text: `Task added. Current tasks: ${JSON.stringify(tasks)}` }]
+          };
+        }
+      });
+
+      document.modelContext.registerTool({
+        name: "complete-task",
+        description: "Marks a task as done by its numeric ID.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            id: { type: "number", description: "The numeric ID of the task to mark as done." }
+          },
+          required: ["id"]
+        },
+        async execute({ id }) {
+          await fetch(`${API}/${id}/done`, { method: "PATCH" });
+          const tasks = await fetchAndRender();
+          return {
+            content: [{ type: "text", text: `Task ${id} marked done. Tasks: ${JSON.stringify(tasks)}` }]
+          };
+        }
+      });
+
+      console.log("WebMCP tools registered:", ["list-tasks", "add-task", "complete-task"]);
+    } else {
+      console.warn("document.modelContext is not available in this browser. WebMCP tools not registered.");
+    }
+  </script>
+</body>
+</html>
